@@ -50,7 +50,3 @@ Tuning by log-watching works well: if real taps get rejected, lower the strictne
 ## Tuning tips
 
 If real taps are missed, drag sensitivity toward 2x or lower the match strictness; if random noise triggers it, push them higher, teach the noise via Learn a sound to ignore, or recalibrate. Windows "audio enhancements" (noise suppression, AGC) on the mic can fight the detector by squashing exactly the transients it's looking for — if detection is flaky, try disabling enhancements for that device in Sound settings. A mic physically resting near or on the tapping surface works far better than one across the room, since the sound conducts through the desk.
-
-## Testing without a mic
-
-`python test_detector.py` feeds synthetic audio through the detector, calibrator, and reject-learner: it checks that double/triple/single taps and both drag directions are recognized, that clicky "keystrokes" (which also thump the desk) are rejected by the tap fingerprint, and that a learned ignore-sound drops them with the right reason. Useful for checking logic changes without tapping at your desk like a woodpecker.
