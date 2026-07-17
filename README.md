@@ -4,6 +4,9 @@ A small desktop app that listens to your microphone for finger taps on a surface
 
 All audio is processed live in memory. Nothing is recorded or written to disk.
 
+Please note this is a simple version of something based off an ideo i saw of someone's on instagram(i dont remember the name).
+This is more basic as theirs was specific to laptops and i wanted to be able to use it on desktop as well.
+
 ## Setup
 
 Python 3.9+ with tkinter (the standard python.org Windows installer includes it), then:
