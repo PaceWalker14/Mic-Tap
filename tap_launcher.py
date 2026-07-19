@@ -1316,6 +1316,115 @@ def run_quick_action(key):
     raise RuntimeError(f"unknown action '{key}'")
 
 
+# ------------------------------------------ app icon + Windows shortcuts
+
+def make_app_icon_image(size=256):
+    """Draw the app's mic-in-range-rings mark at the given size (RGBA)."""
+    if pystray is None:                     # PIL rides in with pystray
+        return None
+    img = PILImage.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = PILImageDraw.Draw(img)
+    s = size
+    d.rounded_rectangle((s * 0.03, s * 0.03, s * 0.97, s * 0.97),
+                        radius=s * 0.22, fill=(15, 23, 42, 255))
+    cx, cy = s / 2, s * 0.45
+    accent = (34, 211, 238, 255)
+    ring = (45, 70, 110, 255)
+    lw = max(1, int(s * 0.012))
+    for r in (s * 0.29, s * 0.40):
+        d.ellipse((cx - r, cy - r, cx + r, cy + r), outline=ring, width=lw)
+    w, top, bot = s * 0.13, cy - s * 0.17, cy + s * 0.05
+    d.rounded_rectangle((cx - w / 2, top, cx + w / 2, bot),
+                        radius=w / 2, fill=accent)
+    r2, aw = s * 0.11, max(2, int(s * 0.022))
+    d.arc((cx - r2, cy - r2 * 0.7, cx + r2, cy + r2 * 1.2),
+          start=0, end=180, fill=accent, width=aw)
+    d.line((cx, cy + r2 * 1.2, cx, cy + s * 0.19), fill=accent, width=aw)
+    d.line((cx - s * 0.06, cy + s * 0.19, cx + s * 0.06, cy + s * 0.19),
+           fill=accent, width=aw)
+    return img
+
+
+def ensure_app_icon():
+    """Write tap_launcher.ico next to the script (once) and return it."""
+    path = os.path.join(APP_DIR, "tap_launcher.ico")
+    if os.path.exists(path):
+        return path
+    img = make_app_icon_image(256)
+    if img is None:
+        return None
+    try:
+        img.save(path, format="ICO",
+                 sizes=[(16, 16), (32, 32), (48, 48), (64, 64),
+                        (128, 128), (256, 256)])
+        return path
+    except Exception:
+        return None
+
+
+def _known_dir(csidl):
+    buf = ctypes.create_unicode_buffer(260)
+    ctypes.windll.shell32.SHGetFolderPathW(None, csidl, None, 0, buf)
+    return buf.value
+
+
+def _launch_spec():
+    """(exe, args) that starts this app - prefers a console-less pythonw,
+    or the frozen .exe itself when packaged."""
+    if getattr(sys, "frozen", False):
+        return sys.executable, ""
+    exe = sys.executable
+    pw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+    if os.path.exists(pw):
+        exe = pw
+    return exe, f'"{os.path.abspath(__file__)}"'
+
+
+def create_shortcut(link_path, target, args="", workdir="", icon=""):
+    """Write a .lnk shortcut via IShellLinkW (no extra packages)."""
+    ole32 = ctypes.oledll.ole32
+    try:
+        ole32.CoInitialize(None)
+    except OSError:
+        pass
+    HRESULT, VOIDP = ctypes.HRESULT, ctypes.c_void_p
+    link_p, pf_p = VOIDP(), VOIDP()
+    try:
+        ole32.CoCreateInstance(
+            ctypes.byref(_GUID("{00021401-0000-0000-C000-000000000046}")),
+            None, 1,
+            ctypes.byref(_GUID("{000214F9-0000-0000-C000-000000000046}")),
+            ctypes.byref(link_p))                       # IShellLinkW
+        _com_method(link_p, 20, HRESULT, ctypes.c_wchar_p)(
+            link_p, target)                             # SetPath
+        if args:
+            _com_method(link_p, 11, HRESULT, ctypes.c_wchar_p)(
+                link_p, args)                           # SetArguments
+        if workdir:
+            _com_method(link_p, 9, HRESULT, ctypes.c_wchar_p)(
+                link_p, workdir)                        # SetWorkingDirectory
+        if icon:
+            _com_method(link_p, 17, HRESULT, ctypes.c_wchar_p, ctypes.c_int)(
+                link_p, icon, 0)                        # SetIconLocation
+        _com_method(link_p, 0, HRESULT, ctypes.POINTER(_GUID),
+                    ctypes.POINTER(VOIDP))(
+            link_p,
+            ctypes.byref(_GUID("{0000010B-0000-0000-C000-000000000046}")),
+            ctypes.byref(pf_p))                         # QI -> IPersistFile
+        _com_method(pf_p, 6, HRESULT, ctypes.c_wchar_p, ctypes.c_int)(
+            pf_p, link_path, 1)                         # IPersistFile::Save
+    finally:
+        for p in (pf_p, link_p):
+            if p:
+                _com_method(p, 2, ctypes.c_ulong)(p)
+
+
+def install_shortcut(link_path):
+    """Create our shortcut at link_path (Desktop or Startup)."""
+    exe, args = _launch_spec()
+    create_shortcut(link_path, exe, args, APP_DIR, ensure_app_icon() or exe)
+
+
 # ----------------------------------------------------------------------- UI
 
 THEMES = {
@@ -1587,6 +1696,91 @@ class TapLauncherApp:
         self.tray = pystray.Icon("tap_launcher", img, "Tap Launcher", menu)
         threading.Thread(target=self.tray.run, daemon=True).start()
 
+    # -- menu + Windows integration ------------------------------------
+
+    def _build_menu(self):
+        win = sys.platform.startswith("win")
+        menubar = tk.Menu(self.root)
+        filem = tk.Menu(menubar, tearoff=0,
+                        bg=BG_MID, fg=FG_MAIN, activebackground=SELECT_BG,
+                        activeforeground=SELECT_FG)
+        filem.add_command(label="Create desktop shortcut",
+                          command=self._make_desktop_shortcut)
+        self.startup_var = tk.BooleanVar(
+            value=win and os.path.exists(self._startup_lnk()))
+        filem.add_checkbutton(label="Start with Windows",
+                              variable=self.startup_var, selectcolor=GOOD,
+                              command=self._toggle_startup)
+        self._file_menu = filem
+        self._startup_idx = filem.index("end")   # the checkbutton's index
+        filem.add_separator()
+        filem.add_command(label="Quit", command=self._shutdown)
+        self._update_startup_label()
+        menubar.add_cascade(label="File", menu=filem)
+        helpm = tk.Menu(menubar, tearoff=0,
+                        bg=BG_MID, fg=FG_MAIN, activebackground=SELECT_BG,
+                        activeforeground=SELECT_FG)
+        helpm.add_command(label="About Tap Launcher",
+                          command=self._show_about)
+        menubar.add_cascade(label="Help", menu=helpm)
+        self.root.config(menu=menubar)
+
+    def _desktop_lnk(self):
+        return os.path.join(_known_dir(0x0010), "Tap Launcher.lnk")
+
+    def _startup_lnk(self):
+        return os.path.join(_known_dir(0x0007), "Tap Launcher.lnk")
+
+    def _update_startup_label(self):
+        on = bool(self.startup_var.get())
+        self._file_menu.entryconfigure(
+            self._startup_idx,
+            label=("Start with Windows      ✔ ON" if on
+                   else "Start with Windows      (off)"))
+
+    def _make_desktop_shortcut(self):
+        if not sys.platform.startswith("win"):
+            self._log("Desktop shortcuts are Windows-only.", "warn")
+            return
+        try:
+            install_shortcut(self._desktop_lnk())
+            self._log("Added a 'Tap Launcher' shortcut to your desktop - "
+                      "double-click it any time to open the app.", "ok")
+        except Exception as ex:
+            self._log(f"Could not create the desktop shortcut: {ex}", "warn")
+
+    def _toggle_startup(self):
+        if not sys.platform.startswith("win"):
+            self.startup_var.set(False)
+            self._log("Run-at-startup is Windows-only.", "warn")
+            return
+        path = self._startup_lnk()
+        try:
+            if self.startup_var.get():
+                install_shortcut(path)
+                self._log("Tap Launcher will now start automatically when "
+                          "you log in to Windows.", "ok")
+            else:
+                if os.path.exists(path):
+                    os.remove(path)
+                self._log("Tap Launcher will no longer start automatically "
+                          "at login.", "ok")
+        except Exception as ex:
+            self.startup_var.set(os.path.exists(path))
+            self._log(f"Could not change the startup setting: {ex}", "warn")
+        self._update_startup_label()
+
+    def _show_about(self):
+        from tkinter import messagebox
+        messagebox.showinfo(
+            "About Tap Launcher",
+            f"Tap Launcher  v{APP_VERSION}\n\n"
+            "Turn taps on your desk into app launches and shortcuts.\n"
+            "All audio is processed live in memory - nothing is recorded.\n\n"
+            "Concept inspired by Holo:\n"
+            "github.com/JustinGamer191/Holo",
+            parent=self.root)
+
     # -- UI construction ----------------------------------------------
 
     def _build_ui(self):
@@ -1595,6 +1789,14 @@ class TapLauncherApp:
         self.root.minsize(540, 680)
         apply_theme(self.root)
         enable_dark_title_bar(self.root)
+
+        self._ico = ensure_app_icon()
+        if self._ico:
+            try:
+                self.root.iconbitmap(self._ico)
+            except Exception:
+                pass
+        self._build_menu()
 
         outer = ttk.Frame(self.root, padding=10)
         outer.pack(fill="both", expand=True)

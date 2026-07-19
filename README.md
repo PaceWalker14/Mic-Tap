@@ -26,6 +26,15 @@ Run it with:
 python tap_launcher.py
 ```
 
+### Desktop shortcut & starting with Windows
+
+From the app's **File** menu:
+
+- **Create desktop shortcut** drops a double-clickable "Tap Launcher" icon on your desktop (it launches without a console window).
+- **Start with Windows** is a checkbox — tick it to have Tap Launcher open automatically when you log in, untick it to stop. It simply adds or removes a shortcut in your Startup folder.
+
+Both use a generated `tap_launcher.ico` next to the script, which is also the window/taskbar icon.
+
 ## First run
 
 1. Pick your microphone from the dropdown if the default isn't the one near your tapping surface.
