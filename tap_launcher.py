@@ -76,6 +76,7 @@ SPEC_N = 4096                # samples analysed around a transient's peak
 REJECT_MARGIN = 0.05         # bias toward rejecting near-ties with ignores
 REJECT_FLOOR = 0.45          # an ignore-sound must at least somewhat match
 
+APP_VERSION = "1.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, "tap_launcher_config.json")
 
@@ -183,7 +184,7 @@ APP_ACTIONS = ("app", "app_dictate")
 PATTERN_KEYS = ("2", "3", "4", "close-far", "far-close")
 PATTERN_NAMES = {
     "2": "Double tap", "3": "Triple tap", "4": "Quadruple tap",
-    "close-far": "Close · Far", "far-close": "Far · Close",
+    "close-far": "Close·Far / Hard·Soft", "far-close": "Far·Close / Soft·Hard",
 }
 
 NEAR_FAR_DB = 8.0    # default loudness gap to count as a distance move
@@ -1368,6 +1369,13 @@ def apply_theme(root):
     style.configure("Hint.TLabel", foreground=FG_HINT)
     style.configure("Dim.TLabel", foreground=FG_DIM)
     style.configure("Warn.TLabel", foreground=WARN)
+    style.configure("Head.TLabel", foreground=ACCENT,
+                    font=("Segoe UI", 10, "bold"))
+    style.configure("Accent.TButton", background=ACCENT, foreground=BG_DARK)
+    style.map("Accent.TButton",
+              background=[("active", _mix_color(ACCENT, "#ffffff", 0.15)),
+                          ("pressed", _mix_color(ACCENT, BG_DARK, 0.2))],
+              foreground=[("disabled", DISABLED_FG)])
     style.configure("TButton", background=BG_MID, padding=4)
     style.map("TButton",
               background=[("disabled", BG_DARK), ("pressed", BG_EDGE),
@@ -1583,8 +1591,8 @@ class TapLauncherApp:
 
     def _build_ui(self):
         self.root.title("Tap Launcher")
-        self.root.geometry("580x850")
-        self.root.minsize(540, 700)
+        self.root.geometry("580x900")
+        self.root.minsize(540, 680)
         apply_theme(self.root)
         enable_dark_title_bar(self.root)
 
@@ -1618,19 +1626,22 @@ class TapLauncherApp:
                                     command=self._toggle_theme)
         self.theme_btn.pack(side="left", padx=(6, 0))
 
+        spk = ttk.Labelframe(outer, text="Ignore my computer's own audio",
+                             padding=(8, 2))
+        spk.pack(fill="x", pady=(2, 0))
         self.spk_gate_var = tk.BooleanVar(
             value=bool(self.cfg.get("speaker_gate")))
         ttk.Checkbutton(
-            outer, variable=self.spk_gate_var, command=self._on_speaker_gate,
-            text="Ignore ALL taps while my PC speakers are playing "
-                 "(simple, reliable)"
-        ).pack(fill="x", pady=(0, 2))
+            spk, variable=self.spk_gate_var, command=self._on_speaker_gate,
+            text="Pause detection while the speakers play  ·  simple, "
+                 "reliable"
+        ).pack(fill="x")
         self.echo_var = tk.BooleanVar(value=bool(self.cfg.get("echo_reject")))
         ttk.Checkbutton(
-            outer, variable=self.echo_var, command=self._on_echo_reject,
-            text="Ignore only my PC's own audio - still lets me tap while "
-                 "it plays (experimental)"
-        ).pack(fill="x", pady=(0, 4))
+            spk, variable=self.echo_var, command=self._on_echo_reject,
+            text="Cancel only the PC audio, keep tapping over it  ·  "
+                 "experimental"
+        ).pack(fill="x")
 
         # calibration / tuning / actions live in tabs
         nb = ttk.Notebook(outer)
@@ -1825,10 +1836,10 @@ class TapLauncherApp:
 
         ttk.Label(acts, style="Hint.TLabel", wraplength=500,
                   justify="left",
-                  text="Close · Far = two taps, the first right by the mic "
-                       "and the second a hand-span away (same double-tap "
-                       "timing). It's judged by loudness, so tap with even "
-                       "force and vary only the distance."
+                  text="Close·Far = a loud tap then a soft one - either "
+                       "move the second tap away from the mic, or just tap "
+                       "it softer in the same spot (it's judged by loudness, "
+                       "so both read the same). Far·Close is the reverse."
                   ).grid(row=row, column=0, columnspan=4, sticky="w")
         row += 1
 
@@ -1843,15 +1854,32 @@ class TapLauncherApp:
         for key in PATTERN_KEYS:
             self._sync_target_row(key)
 
-        # log
-        logf = ttk.LabelFrame(outer, text="What I'm hearing", padding=6)
-        logf.pack(fill="both", expand=True, pady=6)
-        self.log = tk.Text(logf, height=9, state="disabled", bg=BG_DEEP,
+        # footer pinned to the bottom (packed first so the log shrinks
+        # around it instead of pushing it off-screen): live status left,
+        # product name right
+        footer = ttk.Frame(outer)
+        footer.pack(side="bottom", fill="x", pady=(8, 0))
+        self.footer_lbl = ttk.Label(footer, text="", style="Hint.TLabel")
+        self.footer_lbl.pack(side="left")
+        ttk.Label(footer, text=f"Tap Launcher  v{APP_VERSION}",
+                  style="Hint.TLabel").pack(side="right")
+        self._footer_cache = None
+
+        # activity log with its own header row + a Clear button
+        logf = ttk.Frame(outer)
+        logf.pack(side="bottom", fill="both", expand=True, pady=(8, 0))
+        loghead = ttk.Frame(logf)
+        loghead.pack(fill="x")
+        ttk.Label(loghead, text="Activity", style="Head.TLabel"
+                  ).pack(side="left")
+        ttk.Button(loghead, text="Clear", width=7,
+                   command=self._clear_log).pack(side="right")
+        self.log = tk.Text(logf, height=7, state="disabled", bg=BG_DEEP,
                            fg=LOG_FG, relief="flat", wrap="word",
-                           insertbackground=FG_MAIN,
+                           padx=8, pady=6, insertbackground=FG_MAIN,
                            selectbackground=SELECT_BG,
                            highlightthickness=0)
-        self.log.pack(fill="both", expand=True)
+        self.log.pack(fill="both", expand=True, pady=(4, 0))
         self.log.tag_configure("ok", foreground=GOOD)
         self.log.tag_configure("warn", foreground=WARN)
 
@@ -2090,6 +2118,7 @@ class TapLauncherApp:
         self.log.tag_configure("warn", foreground=WARN)
         self.theme_btn.config(text="Light mode" if CURRENT_THEME == "dark"
                               else "Dark mode")
+        self._footer_cache = None  # re-apply footer colour for the new theme
         self._icon_cache.clear()   # icons re-render on the new field colour
 
     def _on_action_change(self, key):
@@ -2226,6 +2255,25 @@ class TapLauncherApp:
         self.clear_btn.config(text=f"Clear ignored ({n})")
         self.clear_btn.state(["!disabled"] if n else ["disabled"])
 
+    def _clear_log(self):
+        self.log.configure(state="normal")
+        self.log.delete("1.0", "end")
+        self.log.configure(state="disabled")
+
+    def _update_footer(self):
+        st = self.state_txt
+        if st in ("no audio", "mic error"):
+            txt, col = "● Microphone unavailable", WARN
+        elif st == "calibrating":
+            txt, col = "● Calibrating…", ACCENT
+        elif st in ("learning", "learning ignore"):
+            txt, col = "● Learning…", ACCENT
+        else:
+            txt, col = "● Listening", GOOD
+        if self._footer_cache != (txt, col):
+            self._footer_cache = (txt, col)
+            self.footer_lbl.config(text=txt, foreground=col)
+
     def _start_learn(self):
         self._neg_queue = []
         self.learner = RejectLearner()
@@ -2330,7 +2378,8 @@ class TapLauncherApp:
                 if trend and (self.cfg["patterns"].get(trend) or {}
                               ).get("action", "none") != "none":
                     key = trend
-                    label = PATTERN_NAMES[trend].upper()
+                    label = {"close-far": "CLOSE · FAR",
+                             "far-close": "FAR · CLOSE"}[trend]
                 if (len(peaks) == 2 and min(peaks) > 0
                         and self._distance_bound()):
                     db = 20.0 * float(np.log10(peaks[0] / peaks[1]))
@@ -2607,6 +2656,7 @@ class TapLauncherApp:
                           fill=FG_FAINT, font=("Segoe UI", 8))
 
     def _redraw(self, now):
+        self._update_footer()
         self._redraw_radar(now)
         c = self.canvas
         c.delete("all")
