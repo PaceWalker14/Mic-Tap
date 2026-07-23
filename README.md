@@ -1,6 +1,6 @@
 # Tap Launcher
 
-A small desktop app that listens to your microphone for finger taps on a surface and turns them into actions. Each tap pattern — double, triple, quadruple, or a *distance move* like **Close · Far** (a loud tap then a soft one, whether by moving away from the mic or just tapping softer) — can either launch an app (picked from a searchable, icon-annotated list of your installed programs) or fire a built-in quick action: minimize / maximize all windows, mute the microphone or speakers, play/pause or skip tracks, nudge the volume, lock the screen, take a screenshot, or start Windows voice typing (Win+H). The "Launch app + voice typing" action chains the two: it opens your browser (or any app), waits for its window to take focus, then starts dictation so you can just speak your search.
+A small desktop app that listens to your microphone for finger taps on a surface and turns them into actions. Each tap pattern — double, triple, quadruple, or a *distance move* like **Close · Far** (a loud tap then a soft one, whether by moving away from the mic or just tapping softer) — can either launch an app (picked from a searchable, icon-annotated list of your installed programs) or fire a built-in quick action: minimize / maximize all windows, mute the microphone or speakers, play/pause or skip tracks, nudge the volume, rotate the screen between portrait and landscape, lock the screen, take a screenshot, or start Windows voice typing (Win+H). The "Launch app + voice typing" action chains the two: it opens your browser (or any app), waits for its window to take focus, then starts dictation so you can just speak your search.
 
 The UI ships with matching **dark and light themes** — the button next to the microphone picker flips between them (title bar included) and the choice is remembered. The window is organized into **Calibration / Tuning / Actions tabs**, with a live view up top: a level meter with the trigger threshold, and a **tap radar** — a mic symbol inside range rings where every sound the detector hears lands as a ring. Its distance from the mic reflects how close the tap probably was (one microphone can't tell direction, only loudness, so nearness is estimated from how loud it arrived), its color shows how hard you hit (cyan soft, green medium, amber hard, gray for rejected sounds), and a readout spells it out, e.g. "Hard tap · very close · +32 dB".
 
@@ -34,6 +34,8 @@ From the app's **File** menu:
 - **Start with Windows** is a checkbox — tick it to have Tap Launcher open automatically when you log in, untick it to stop. It simply adds or removes a shortcut in your Startup folder.
 
 Both use a generated `tap_launcher.ico` next to the script, which is also the window/taskbar icon.
+
+Only one copy runs at a time: launching it again (double-clicking the icon a second time) just brings the existing window to the front — restoring it from the tray if it was hidden — instead of opening a duplicate. So a tap never fires an action several times over.
 
 ## First run
 

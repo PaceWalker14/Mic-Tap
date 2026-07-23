@@ -21,6 +21,7 @@ import queue
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import zlib
@@ -173,6 +174,7 @@ ACTIONS = {
     "volume_down": "Volume down",
     "lock": "Lock the screen",
     "screenshot": "Take a screenshot",
+    "rotate_screen": "Rotate screen (portrait <-> landscape)",
 }
 LABEL_TO_ACTION = {v: k for k, v in ACTIONS.items()}
 
@@ -1255,6 +1257,115 @@ class SpeakerLoopback:
             self._err = repr(e)
 
 
+# --------------------------------------------- display rotation (Windows)
+
+class _POINTL(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class _DEVMODE(ctypes.Structure):
+    # only the display-relevant variant of the DEVMODE union is modelled
+    _fields_ = [
+        ("dmDeviceName", ctypes.c_wchar * 32),
+        ("dmSpecVersion", ctypes.c_ushort),
+        ("dmDriverVersion", ctypes.c_ushort),
+        ("dmSize", ctypes.c_ushort),
+        ("dmDriverExtra", ctypes.c_ushort),
+        ("dmFields", ctypes.c_uint32),
+        ("dmPosition", _POINTL),
+        ("dmDisplayOrientation", ctypes.c_uint32),
+        ("dmDisplayFixedOutput", ctypes.c_uint32),
+        ("dmColor", ctypes.c_short),
+        ("dmDuplex", ctypes.c_short),
+        ("dmYResolution", ctypes.c_short),
+        ("dmTTOption", ctypes.c_short),
+        ("dmCollate", ctypes.c_short),
+        ("dmFormName", ctypes.c_wchar * 32),
+        ("dmLogPixels", ctypes.c_ushort),
+        ("dmBitsPerPel", ctypes.c_uint32),
+        ("dmPelsWidth", ctypes.c_uint32),
+        ("dmPelsHeight", ctypes.c_uint32),
+        ("dmDisplayFlags", ctypes.c_uint32),
+        ("dmDisplayFrequency", ctypes.c_uint32),
+        ("dmICMMethod", ctypes.c_uint32),
+        ("dmICMIntent", ctypes.c_uint32),
+        ("dmMediaType", ctypes.c_uint32),
+        ("dmDitherType", ctypes.c_uint32),
+        ("dmReserved1", ctypes.c_uint32),
+        ("dmReserved2", ctypes.c_uint32),
+        ("dmPanningWidth", ctypes.c_uint32),
+        ("dmPanningHeight", ctypes.c_uint32),
+    ]
+
+
+_ENUM_CURRENT_SETTINGS = -1
+
+
+def read_display_mode():
+    """(width, height, orientation) of the primary display - read-only.
+    orientation: 0/2 = landscape, 1/3 = portrait. None off Windows."""
+    if not sys.platform.startswith("win"):
+        return None
+    dm = _DEVMODE()
+    dm.dmSize = ctypes.sizeof(_DEVMODE)
+    if not ctypes.windll.user32.EnumDisplaySettingsW(
+            None, _ENUM_CURRENT_SETTINGS, ctypes.byref(dm)):
+        return None
+    return (dm.dmPelsWidth, dm.dmPelsHeight, dm.dmDisplayOrientation)
+
+
+def rotate_screen():
+    """Flip the primary display between landscape and portrait. Returns
+    'portrait' or 'landscape' (the new state)."""
+    if not sys.platform.startswith("win"):
+        raise RuntimeError("screen rotation is only supported on Windows")
+    user32 = ctypes.windll.user32
+    dm = _DEVMODE()
+    dm.dmSize = ctypes.sizeof(_DEVMODE)
+    if not user32.EnumDisplaySettingsW(None, _ENUM_CURRENT_SETTINGS,
+                                       ctypes.byref(dm)):
+        raise RuntimeError("could not read the current display mode")
+    landscape_now = dm.dmDisplayOrientation in (0, 2)
+    new = 1 if landscape_now else 0        # portrait (90) <-> landscape
+    # landscape<->portrait always flips the parity, so swap resolution
+    dm.dmPelsWidth, dm.dmPelsHeight = dm.dmPelsHeight, dm.dmPelsWidth
+    dm.dmDisplayOrientation = new
+    dm.dmFields = 0x00000080 | 0x00080000 | 0x00100000  # orient|width|height
+    ret = user32.ChangeDisplaySettingsExW(None, ctypes.byref(dm), None,
+                                          0x00000001, None)  # UPDATEREGISTRY
+    if ret != 0:
+        raise RuntimeError(f"the display driver refused the change "
+                           f"(code {ret})")
+    return "portrait" if new == 1 else "landscape"
+
+
+# ---------------------------------------------- single-instance guard
+
+_instance_mutex = None
+SHOW_FLAG = os.path.join(tempfile.gettempdir(), "tap_launcher.show")
+
+
+def acquire_single_instance():
+    """True if we're the first instance; False if one is already running."""
+    global _instance_mutex
+    if not sys.platform.startswith("win"):
+        return True
+    k32 = ctypes.windll.kernel32
+    k32.CreateMutexW.restype = ctypes.c_void_p
+    _instance_mutex = k32.CreateMutexW(None, False,
+                                       "TapLauncher_SingleInstance_Mutex")
+    return k32.GetLastError() != 183       # ERROR_ALREADY_EXISTS
+
+
+def request_show():
+    """Signal the already-running instance to surface its window."""
+    try:
+        with open(SHOW_FLAG, "w", encoding="utf-8") as f:
+            f.write("show")
+    except Exception:
+        pass
+
+
 def run_quick_action(key):
     """Perform a built-in quick action. Returns a short log message."""
 
@@ -1296,6 +1407,8 @@ def run_quick_action(key):
         need_pyautogui()
         pyautogui.hotkey("win", "printscreen")
         return "screenshot saved to Pictures > Screenshots."
+    if key == "rotate_screen":
+        return f"rotated the screen to {rotate_screen()}."
     if key == "voice_typing":
         need_pyautogui()
         pyautogui.hotkey("win", "h")
@@ -1653,6 +1766,12 @@ class TapLauncherApp:
         self.stream = None
         self._apps_cache = None
         self._icon_cache = {}
+        self._poll_n = 0
+        if os.path.exists(SHOW_FLAG):        # ignore a stale flag from before
+            try:
+                os.remove(SHOW_FLAG)
+            except OSError:
+                pass
         self.level = 0.0
         self.thr = None
         self.state_txt = "starting"
@@ -2523,6 +2642,18 @@ class TapLauncherApp:
 
     # -- event loop ----------------------------------------------------
 
+    def _bring_to_front(self):
+        """Restore + focus the window (also un-hides it from the tray)."""
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.attributes("-topmost", True)
+            self.root.after(250,
+                            lambda: self.root.attributes("-topmost", False))
+            self.root.focus_force()
+        except Exception:
+            pass
+
     def _poll(self):
         now = time.monotonic()
         try:
@@ -2531,6 +2662,13 @@ class TapLauncherApp:
                 self._handle_event(e, now)
         except queue.Empty:
             pass
+        self._poll_n += 1
+        if self._poll_n % 10 == 0 and os.path.exists(SHOW_FLAG):
+            try:
+                os.remove(SHOW_FLAG)
+            except OSError:
+                pass
+            self._bring_to_front()      # a 2nd launch asked us to surface
         self._tick_calibration()
         self._tick_learner()
         self._redraw(now)
@@ -2593,8 +2731,7 @@ class TapLauncherApp:
             self._run_group(key, label)
         elif kind == "tray":
             if e["cmd"] == "open":
-                self.root.deiconify()
-                self.root.lift()
+                self._bring_to_front()
             else:
                 self._shutdown()
         elif kind == "ignored":
@@ -2953,6 +3090,10 @@ class TapLauncherApp:
 # --------------------------------------------------------------------- main
 
 def main():
+    if not acquire_single_instance():
+        # already running - ask that instance to surface, then bow out
+        request_show()
+        return
     if tk is None:
         print("tkinter is not available in this Python install.")
         sys.exit(1)
